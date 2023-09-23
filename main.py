@@ -53,7 +53,7 @@ async def change_status():
 #######################################################
 # CONTEXTUAL MEMORY
 #######################################################
-messages = []
+context_history = {}
 
 @bot.event
 async def on_ready():
@@ -66,15 +66,34 @@ async def on_message(message):
         return
 
     # Debug
-    print(type(message.content))
-    print(message.content)
+    #print(type(message.content))
+    #print(message.content)
+
+    # Check if message starts with "Hey Crash"
     if str(message.content).upper().startswith("HEY CRASH"):
         if len(message.content.split(" ")) < 3:
             await message.channel.send(f"Hey {message.author.mention}, I'm Crash Bandicoot!")
             return
 
-        prompt = " ".join(message.content.split(" ")[2:])
-        messages.append(prompt)
+        if message.guild:
+            guild_id = message.guild.id
+        else:
+            guild_id = message.author.id
+        
+        if guild_id not in context_history:
+            context_history[guild_id] = []
+
+        # Check if context history contains 20 inputs which we will purge the conversation history and start a new one
+        # 20 is the overall maximum context history for server resource use, however the user can only respond to the last 10 messages with context
+        if len(context_history[guild_id]) >= 10:
+            await message.channel.send("⚠️ You have reached the maximum context history. Please start a new conversation using `cb!clearmemory`")
+            return
+
+        # Add prompt to context history and remove "Hey Crash" prefix
+        prompt = message.content.split(" ", 2)[2]
+        context_history[guild_id].append(prompt)
+
+        # Generate response
         response = palm.chat(
             model="models/chat-bison-001",
             temperature=0.25,
@@ -82,11 +101,13 @@ async def on_message(message):
             top_k=40,
             top_p=0.95,
             context="Be and act as Crash Bandicoot",
-            messages=messages
+            messages=context_history[guild_id]
         )
 
+        # Check to see if this message is more than 2000 characters which embeds will be used for
         embedmsg = False
         answer = None
+
         if len(response.last) > 2000:
             embedmsg=True
             answer = discord.Embed(
@@ -100,8 +121,12 @@ async def on_message(message):
             await message.channel.send(embed=answer)
         else:
             await message.channel.send(response.last)
-        messages.append(response.last)
 
+        # Add response to context history
+        context_history[guild_id].append(response.last)
+
+        # The number of inputs the user can respond to is 10 but 20 since it also includes the answer
+        await message.channel.send(f"Context size: **{len(context_history[guild_id])}** of 10")
 
 #######################################################
 # FUNCTIONS
@@ -109,21 +134,49 @@ async def on_message(message):
 @bot.slash_command()
 async def clearmemory(ctx):
     """Clear Crash's memory"""
-    if len(messages) == 0:
+    if ctx.guild:
+        guild_id = ctx.guild.id
+    else:
+        guild_id = ctx.author.id
+
+    if len(context_history[guild_id]) == 0:
         await ctx.respond("Memory is already clear!")
         return
 
-    messages.clear()
+    context_history[guild_id].clear()
     await ctx.respond("Memory cleared!")
+
+# Universal clear memory command
+@bot.slash_command()
+async def clearmemoryu(ctx):
+    """Clear Crash's memory in all guild instances (Requires owner)"""
+    if ctx.author.id != 1039885147761283113:
+        await ctx.respond("Only bot owner can use this command!")
+        return
+    
+    if context_history is None or len(context_history) == 0:
+        await ctx.respond("Memory is already clear!")
+        return
+    
+    context_history.clear()
+    await ctx.respond("Memory cleared across guild instances!")
 
 @bot.slash_command()
 async def listconvos(ctx):
     """List all conversations in Crash's memory"""
-    if len(messages) == 0:
+    if ctx.guild:
+        guild_id = ctx.guild.id
+    else:
+        guild_id = ctx.author.id
+
+    if guild_id not in context_history:
+        context_history[guild_id] = []
+
+    memory = ". ".join(context_history[guild_id])
+
+    if len(context_history[guild_id]) == 0:
         await ctx.respond("Memory is empty!")
         return
-
-    memory = ". ".join(messages)
     
     if len(memory) > 2000:
         await ctx.respond("Memory is too large to display!")
